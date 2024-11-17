@@ -1,3 +1,4 @@
+import time
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
@@ -250,6 +251,8 @@ schema = Schema(query=Query)
 def graphql_playlists():
     name_filter = request.args.get('name')
 
+    start_time = time.time()
+
     #database query
     query = db.session.query(Playlist, User, Song, PlaylistSong, 
         db.func.count(PlaylistFollower.follower_id).label('followers_count')).\
@@ -259,8 +262,23 @@ def graphql_playlists():
         outerjoin(PlaylistFollower, Playlist.id == PlaylistFollower.playlist_id).\
         group_by(Playlist.id, User.id, Song.id, PlaylistSong.position)
 
+
     if name_filter:
         query = query.filter(Playlist.name.ilike(f"%{name_filter}%"))
+
+    # Get the SQL query string and apply EXPLAIN to it
+    sql_query = str(query.statement.compile(dialect=db.engine.dialect, compile_kwargs={"literal_binds": True}))
+    explain_query = text(f"EXPLAIN {sql_query}")
+    
+
+    # Print the EXPLAIN result (or log it)
+    try:
+        explain_result = db.session.execute(explain_query).fetchall()
+        print("EXPLAIN output:")
+        for row in explain_result:
+         print(row)
+    except Exception as e:
+        print(f"Error executing EXPLAIN query: {e}")
 
     result = query.all()
 
@@ -288,6 +306,10 @@ def graphql_playlists():
             'title': song.title,
             'artist': song.artist
         })
+   
+    end_time = time.time()
+    query_time_ms= end_time - start_time
+    print(f"Query time: {query_time_ms: .4f} ") 
 
     # Correct indentation for the return statement
     return jsonify({'playlists': playlists})
@@ -368,6 +390,9 @@ def add_playlist():
 
 @PA_2.route('/statistics', methods=['GET'])
 def get_statistics():
+
+    start_time = time.time()
+
     # Subquery für Playlist-Einträge und durchschnittliche Position
     subquery = db.session.query(
         PlaylistSong.song_id.label('song_id'),
@@ -382,6 +407,11 @@ def get_statistics():
         db.func.avg(subquery.c.avg_position).label('average_position'),       # Durchschnittliche Position
         db.func.count(db.func.distinct(Song.id)).label('unique_songs')        # Anzahl unterschiedlicher Lieder in Playlists pro Interpret
     ).join(subquery, Song.id == subquery.c.song_id).group_by(Song.artist).all()
+
+
+    end_time = time.time()
+    query_time = (end_time - start_time)
+    print(f"Query time: {query_time:.4f} seconds")
 
     #check if the result is empty
     if not result:
