@@ -1,0 +1,5 @@
+Flask
+flask_pymongo
+bson
+flask-graphql
+pymongoexplain
