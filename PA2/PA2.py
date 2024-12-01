@@ -1,4 +1,3 @@
-import time
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
@@ -230,7 +229,7 @@ def change_song(song_id):
         return jsonify({'message': 'Error updating the song:', 'error': str(e)}), 500
 
 # curl -Uri http://127.0.0.1:5000/songs/8001 -Method Put -Headers @{"Content-Type"="application/json"} -Body '{"title": "Updated Song Title", "artist": "Updated Artist"}'
-# http://127.0.0.1:5000/songs?title=Updated Song Title
+
 
 #endregion
 
@@ -258,7 +257,7 @@ def delete_song(song_id):
         return jsonify({'message': 'Error deleting the song:', 'error': str(e)}), 500
 
 # curl -Uri http://127.0.0.1:5000/songs/delete/8001 -Method DELETE        
-# http://127.0.0.1:5000/songs?title=Updated Song Title
+
 
 #endregion
 
@@ -440,7 +439,6 @@ def add_playlist():
         return jsonify({'message': 'Error adding the playlist:', 'error': str(e)}), 500
 
 # curl -Uri http://127.0.0.1:5000/playlists/add -Method POST -Headers @{"Content-Type"="application/json"} -Body '{"name": "My new Playlist", "owner_id": 1, "songs": [{"id": 1, "position": 1}, {"id": 2, "position": 2}, {"id": 3, "position": 3}]}'
-# http://127.0.0.1:5000/playlists?name=My new Playlist
 
 #endregion
 
@@ -516,6 +514,4 @@ def get_statistics():
 #start the flask application
 if __name__ == '__main__':
     PA_2.run(debug=True)
-
-
 
