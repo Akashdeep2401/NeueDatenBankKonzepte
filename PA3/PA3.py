@@ -1,409 +1,299 @@
-import datetime
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
-#from graphene import ObjectType, String, List, Schema
-#from graphene_mongo import MongoengineObjectType
-from flask_graphql import GraphQLView
-from pymongoexplain import ExplainCollection
+from collections import defaultdict
 
 PA3 = Flask(__name__)
 
 # MongoDB Konfiguration
-PA3.config['MONGO_URI'] = 'mongodb://localhost:27017/Spotify'
+PA3.config["MONGO_URI"] = "mongodb://localhost:27017/Spotify"
 mongo = PyMongo(PA3)
 
+#region Anforderung 1:
 
-@PA3.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "running"})
-
-# Test the MongoDB connection
-@PA3.route('/test_db_connection', methods=['GET'])
-def test_db_connection():
-    try:
-        # Perform a simple query to check the connection
-        mongo.db.users.find_one()
-        return jsonify({'message': 'Database connection successful!'})
-    except Exception as e:
-        return jsonify({'message': 'Database connection failed:', 'error': str(e)})
-
-# Collections for Songs, Users, Playlists, PlaylistSongs, PlaylistFollowers
-songs_collection = mongo.db.song
-users_collection = mongo.db.user
-playlists_collection = mongo.db.playlist
-playlist_songs_collection = mongo.db.playlist_song
-playlist_followers_collection = mongo.db.playlist_follower
-
-
-# region Anforderung 1: Song Ausgabe
-
+# Lieder in einer paginierbaren und nach Titel und Interpret filterbaren Liste ausgeben
 @PA3.route('/songs', methods=['GET'])
 def get_songs():
-    #filters
-    title_filter = request.args.get('title')
-    artist_filter = request.args.get('artist')
+    # Paginierung
+    page = int(request.args.get('page', 1))
+    page_size = int(request.args.get('page_size', 10))
+    
+    # Filterung
+    title_filter = request.args.get('title', '')
+    artist_filter = request.args.get('artist', '')
 
-    #query
+    # Abfrage der Lieder mit Filterung
     query = {}
     if title_filter:
-        query['title'] = {'$regex': title_filter, '$options': 'i'} # case-insensitive
+        query['title'] = {'$regex': title_filter, '$options': 'i'}  # Fallunempfindliche Suche
     if artist_filter:
         query['artist'] = {'$regex': artist_filter, '$options': 'i'}
 
-    # Fetch the query execution plan using explain()
-    try:
-        explain_result = songs_collection.find(query).explain()    
-        print("EXPLAIN Results:")
-        print(explain_result)  # Print the detailed execution plan to the console
-    except Exception as e:
-        print(f"Fehler beim Ausführen der EXPLAIN-Abfrage: {e}")
-
-    #Paginierung
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 10))
-    skip_count = (page - 1) * per_page
-
-    #fetch songs from MongoDB
-    songs = songs_collection.find(query).skip(skip_count).limit(per_page)
-    songs_list = list(songs)
-
-    #check if songs exist
-    if not songs_list:
-        return jsonify({'message': 'Kein Song gefunden mit den gegebenen Filtern.'})
+    # Berechnung der Anzahl der Lieder
+    total_songs = mongo.db.songs.count_documents(query)
     
-    #return songs
-    songs_json = [
-        {
-            'id': str(song['_id']),
+    # Abrufen der Lieder mit Paginierung
+    songs = mongo.db.songs.find(query).skip((page - 1) * page_size).limit(page_size)
+
+    # Umwandeln der Lieder in eine Liste
+    songs_list = []
+    for song in songs:
+        songs_list.append({
+            'song_id': str(song['_id']),
             'title': song['title'],
             'artist': song['artist']
-        }
-        for song in songs_list
-    ]
-
-    #total number of songs
-    total_songs = songs_collection.count_documents(query)
-    total_pages = (total_songs +per_page -1) // per_page
+        })
 
     return jsonify({
-        'songs': songs_json,
         'total_songs': total_songs,
-        'total_pages': total_pages,
-        'current_page': page
+        'page': page,
+        'page_size': page_size,
+        'songs': songs_list
     })
 
-# Alle Songs:
-# http://127.0.0.1:5000/songs
-# Nach Song-Titel sortiert (vice versa für Artist):
-# http://127.0.0.1:5000/songs?title=love&page=1&per_page=5
-# Song konnte nicht gefunden werden:
-# http://127.0.0.1:5000/songs?artist=shreya&page=1&per_page=5
+# http://localhost:5000/songs?page=1&page_size=10
+# http://localhost:5000/songs?page=1&page_size=10&title=Young Shock&artist=Federal Semih
 
-# endregion
+#endregion
 
+#region Anforderung 2: 
 
-# region Anforderung 2: Song hinzufügen
-
-@PA3.route('/songs/add', methods=['POST'])
+# Hinzufügen eines neuen Liedes
+@PA3.route('/songs', methods=['POST'])
 def add_song():
-    #get song data from request
-    data= request.get_json()
 
-    #check if the title and artist are provided
-    if not data or 'title' not in data or 'artist' not in data:
-        return jsonify({'message': 'Titel und Artist sind erforderlich!'}), 400
+    data = request.get_json()
+    if 'title' not in data or 'artist' not in data:
+        return jsonify({'error': 'Title and artist are required'}), 400
     
-    #add song to MongoDB
-
     new_song = {
         'title': data['title'],
         'artist': data['artist']
     }
 
-    #insert song into MongoDB
-    try:
-        result = songs_collection.insert_one(new_song)
-        return jsonify({'message': 'Song wurde erfolgreich hinzugefügt!', 'id': str(result.inserted_id)}), 201
-    except Exception as e:
-        mongo.session.rollback()
-        return jsonify({'message': 'Fehler beim Hinzufügen des Songs!', 'error': str(e)}), 400
+    result = mongo.db.songs.insert_one(new_song)
+    return jsonify({'message': 'Song added', 'song_id': str(result.inserted_id)}), 201
 
-# curl -Uri http://127.0.0.1:5000/songs/add -Method POST -Headers @{"Content-Type"="application/json"} -Body '{"title": "Akash new song", "artist": "Akash"}'
-# {artist: 'Akash'}
+# http://localhost:5000/songs"
+# {
+#     "title": "Mein neues Lied",
+#     "artist": "Mein Künstler"
+# }
 
-# endregion
-
-# region Update Song
-
-@PA3.route('/songs/<string:song_id>', methods=['PUT'])
-def update_song(song_id):
+# Ändern eines bestehenden Liedes
+@PA3.route('/songs/<id>', methods=['PUT'])
+def update_song(id):
     data = request.get_json()
+    song = mongo.db.songs.find_one({'_id': ObjectId(id)})
 
-    #check if the title and artist are provided
-    if not data or 'title' not in data or 'artist' not in data:
-        return jsonify({'message': 'Titel und Artist sind erforderlich!'}), 400
-    
-    song = songs_collection.find_one({'_id': ObjectId(song_id)})
     if not song:
-        return jsonify({'message': 'Song nicht gefunden!'}), 404
-    
-    # change title or artist
-    update_data ={}
+        return jsonify({'error': 'Song not found'}), 404
+
+    # Aktualisieren der Lieddaten
+    updated_song = {}
+
     if 'title' in data:
-        update_data['title'] = data['title']
+        updated_song['title'] = data['title']
+
     if 'artist' in data:
-        update_data['artist'] = data['artist']
-    
-    #update song in MongoDB
-    try:
-        songs_collection.update_one({'_id': ObjectId(song_id)}, {'$set': update_data})
-        return jsonify({'message': 'Song erfolgreich aktualisiert!'}), 200
-    except Exception as e:
-        return jsonify({'message': 'Fehler beim Aktualisieren des Songs!', 'error': str(e)}), 400
+        updated_song['artist'] = data['artist']
 
-# curl -Uri http://127.0.0.1:5000/songs/674a2a065f429f56a0dd3e55 -Method Put -Headers @{"Content-Type"="application/json"} -Body '{"title": "Updated Song Title Akash", "artist": "Updated Artist Akash"}'  
+    mongo.db.songs.update_one({'_id': ObjectId(id)}, {'$set': updated_song})
 
-# endregion
+    return jsonify({'message': 'Song updated'})
 
-# region Delete Song
+# http://localhost:5000/songs/<id>
+# {
+#     "title": "Mein aktualisiertes Lied"
+# }
 
-@PA3.route('/songs/delete/<string:song_id>', methods=['DELETE'])
-def delete_song(song_id):
-    result = songs_collection.delete_one({'_id': ObjectId(song_id)})
-    
+
+# Löschen eines Liedes
+@PA3.route('/songs/<id>', methods=['DELETE'])
+def delete_song(id):
+    result = mongo.db.songs.delete_one({'_id': ObjectId(id)})
+
     if result.deleted_count == 0:
-        return jsonify({'message': 'Song nicht gefunden!'}), 404
-    
-    try:
-        playlist_songs_collection.delete_many({'song_id': ObjectId(song_id)})
-        return jsonify({'message': 'Song erfolgreich gelöscht!'}), 200
-    except Exception as e:
-        return jsonify({'message': 'Fehler beim Löschen des Songs!', 'error': str(e)}), 400
+        return jsonify({'error': 'Song not found'}), 404
 
+    return jsonify({'message': 'Song deleted'})
 
-# endregion
+# http://localhost:5000/songs/<id>
 
-# region Anforderung 3: Playlist Ausgabe
+#endregion
 
-@PA3.route('/playlists', methods=['GET'])
-def get_playlists():
-    name_filter = request.args.get('name')
-    
-    explain_collection = ExplainCollection(playlists_collection)  # Wrap the collection with ExplainCollection
-    # Start aggregation pipeline
-    pipeline = []
+#region Anforderung 3: 
 
-    # Filter by playlist name if provided
-    if name_filter:
-        pipeline.append({
-            '$match': {
-                'name': {'$regex': name_filter, '$options': 'i'}  # Case-insensitive search for playlist name
-            }
-        })
+# Ausgabe einer Playlist inkl. User, Lieder und Follower
+@PA3.route('/playlists/<id>', methods=['GET'])
+def get_playlist(id):
+    # Suche nach der Playlist in der Datenbank
+    playlist = mongo.db.playlists.find_one({'_id': ObjectId(id)})
 
+    if not playlist:
+        return jsonify({'error': 'Playlist not found'}), 404
 
-    # Lookup User to get owner details
-    pipeline.append({
-        '$lookup': {
-            'from': 'user',               # Correct collection name: 'user'
-            'localField': 'owner_id',     # Local field in 'playlists' collection
-            'foreignField': 'id',         # Corresponding field in 'user' collection
-            'as': 'owner'                 # Output the joined data in a new field called 'owner'
-        }
-    })
+    # Besitzer der Playlist holen
+    owner = mongo.db.users.find_one({'_id': ObjectId(playlist['owner_id'])})
+    owner_name = owner['name'] if owner else "Unknown User"
 
-    # Lookup PlaylistSongs to get the songs in each playlist
-    pipeline.append({
-        '$lookup': {
-            'from': 'playlist_song',     # Correct collection name: 'playlist_song'
-            'localField': 'id',          # Local field in 'playlists' collection
-            'foreignField': 'playlist_id', # Corresponding field in 'playlist_song' collection
-            'as': 'songs'                # Output the joined data in a new field called 'songs'
-        }
-    })
+    # Lieder der Playlist holen
+    song_ids = [song['song_id'] for song in playlist['songs']]
+    songs = []
+    for song_id in song_ids:
+        song = mongo.db.songs.find_one({'_id': ObjectId(song_id)})
+        if song:
+            songs.append({
+                'song_id': str(song['_id']),
+                'title': song['title'],
+                'artist': song['artist'],
+                'position': next((s['position'] for s in playlist['songs'] if s['song_id'] == song_id), None)
+            })
 
-    # Lookup Songs to get song details from 'song' collection
-    pipeline.append({
-        '$lookup': {
-            'from': 'song',              # Correct collection name: 'song'
-            'localField': 'songs.song_id', # Local field in 'playlist_song' (songs)
-            'foreignField': 'id',         # Corresponding field in 'song' collection
-            'as': 'song_details'          # Add song details to the field
-        }
-    })
+    # Follower holen
+    followers = []
+    for follower_id in playlist['followers']:
+        follower = mongo.db.users.find_one({'_id': ObjectId(follower_id)})
+        if follower:
+            followers.append({
+                'follower_id': str(follower['_id']),
+                'name': follower['name']
+            })
 
-    # Lookup PlaylistFollowers to count distinct followers for each playlist
-    pipeline.append({
-        '$lookup': {
-            'from': 'playlist_follower',  # Correct collection name: 'playlist_follower'
-            'localField': 'id',            # Local field in 'playlists' collection
-            'foreignField': 'playlist_id',  # Corresponding field in 'playlist_follower' collection
-            'as': 'followers'               # Output the joined data in a new field called 'followers'
-        }
-    })
-
-    # Project the necessary fields for the response
-    pipeline.append({
-        '$project': {
-            'playlist_name': 1,
-            'owner_name': { '$arrayElemAt': [ '$owner.name', 0 ] },  # Extract owner name
-            'created_date': 1,
-            'followers_count': { '$size': '$followers' },  # Count the followers
-            'songs': {
-                '$map': {
-                    'input': '$songs',  # Array of songs in 'songs' field
-                    'as': 'song',
-                    'in': {
-                        'position': '$$song.position', 
-                        'title': { '$arrayElemAt': [ '$song_details.title', 0 ] },  # Get song title
-                        'artist': { '$arrayElemAt': [ '$song_details.artist', 0 ] }  # Get song artist
-                    }
-                }
-            }
-        }
-    })
-
-    
-    # Fetch the query execution plan using explain()
-    try:
-        explain_result = explain_collection.aggregate(pipeline)
-        print("EXPLAIN Results:")
-        print(explain_result)  # Print the detailed execution plan to the console
-    except Exception as e:
-        print(f"Fehler beim Ausführen der EXPLAIN-Abfrage: {e}")
-
-    # Execute the aggregation pipeline
-    playlists = list(playlists_collection.aggregate(pipeline))
-
-    # Convert ObjectId to string for JSON serialization
-    for playlist in playlists:
-        playlist['_id'] = str(playlist['_id'])  # Convert ObjectId to string
-        for follower in playlist.get('followers', []):
-            follower['_id'] = str(follower['_id'])  # If you have follower _id, convert them
-
-    if not playlists:
-        return jsonify({'message': 'No playlists found with the given filters.'})
-
-    return jsonify({'playlists': playlists})
-    
-# curl -Uri http://127.0.0.1:5000/playlists?name=newban -Method GET
-# http://127.0.0.1:5000/playlists?name=newban
-# endregion
-
-# region Anforderung 4: Playlist hinzufügen
-
-@PA3.route('/playlists/add', methods=['POST'])
-def add_playlist():
-    data = request.get_json()
-
-    if not data or 'name' not in data or 'owner_id' not in data or 'songs' not in data:
-        return jsonify({'message': 'Name, owner_id und songs sind erforderlich!'}), 400
-    
-    # Check if owner exists
-    owner = users_collection.find_one({'id': data['owner_id']})
-    if not owner:
-        return jsonify({'message': 'Owner nicht gefunden!'}), 404
-    
-    # new playlist
-    new_playlist = {
-        "name": data['name'],
-        "owner_id":data['owner_id'],
-        "created_date": datetime.datetime.now() 
+    # Umwandeln der Playlist in ein lesbares Format
+    playlist_data = {
+        'playlist_id': str(playlist['_id']),
+        'name': playlist['name'],
+        'created_date': playlist['created_date'],
+        'owner': {
+            'owner_id': str(playlist['owner_id']),
+            'name': owner_name
+        },
+        'followers': followers,
+        'songs': songs
     }
 
-    result = playlists_collection.insert_one(new_playlist)
-    playlist_id = result.inserted_id
+    return jsonify(playlist_data)
 
-    # insert songs into playlist_song collection
-    playlist_song = []
-    for song_info in data['songs']:
-        playlist_song.append({
-            'playlist_id': playlist_id,
-            'song_id': song_info['id'],
-            'position': song_info['position']
-        })
-        
-         # Überprüfung ob der Song existiert
-        song = songs_collection.find_one({'id':song_info['id']})
-        if not song:
-            return jsonify({'message': 'Song nicht gefunden!'}), 404
+# http://localhost:5000/playlists/<id>
 
+#endregion
+
+#region Anforderung 4:
+
+# Hinzufügen einer Playlist inkl. Lieder und Verweis auf einen bereits existierenden User
+@PA3.route('/playlists', methods=['POST'])
+def create_playlist():
+    data = request.get_json()
     
-
+    # Überprüfen, ob die erforderlichen Felder vorhanden sind
+    if 'name' not in data or 'owner_id' not in data or 'songs' not in data:
+        return jsonify({'error': 'Name, owner_id, and songs are required'}), 400
     
-    playlist_songs_collection.insert_many(playlist_song)
+    # Überprüfen, ob der Benutzer existiert
+    owner = mongo.db.users.find_one({'_id': ObjectId(data['owner_id'])})
+    if not owner:
+        return jsonify({'error': 'Owner user not found'}), 404
 
-    return jsonify({'message': 'Playlist erfolgreich hinzugefügt!', 'id': str(playlist_id)}), 201
+    # Playlist-Daten erstellen
+    new_playlist = {
+        'name': data['name'],
+        'created_date': data.get('created_date', '2023-01-01'),
+        'owner_id': ObjectId(data['owner_id']),
+        'followers': [],
+        'songs': []
+    }
 
-# endregion
+    # Füge die Lieder zur Playlist hinzu
+    for song in data['songs']:
+        if 'song_id' in song and 'position' in song:
+            new_playlist['songs'].append({
+                'song_id': ObjectId(song['song_id']),
+                'position': song['position']
+            })
+        else:
+            return jsonify({'error': 'Each song must have song_id and position'}), 400
 
-# region get statistics
+    # Füge die neue Playlist zur Datenbank hinzu
+    result = mongo.db.playlists.insert_one(new_playlist)
 
+    return jsonify({'message': 'Playlist created', 'playlist_id': str(result.inserted_id)}), 201
+
+# http://localhost:5000/playlists
+# {
+#     "name": "Meine neue Playlist",
+#     "owner_id": "id_user",  // Beispiel-ID eines existierenden Benutzers
+#     "songs": [
+#         {
+#             "song_id": "id_lied1",  // Beispiel-ID eines existierenden Liedes
+#             "position": 1
+#         },
+#         {
+#             "song_id": "id_lied2",  // Beispiel-ID eines weiteren existierenden Liedes
+#             "position": 2
+#         }
+#     ]
+# }
+
+#endregion
+
+#region Statistische Auswertung:
+
+# Anzahl der Playlist-Einträge, durchschnittliche Playlist-Position und Anzahl der unterschiedlichen Lieder auf Playlisten je Interpret.
 @PA3.route('/statistics', methods=['GET'])
-
 def get_statistics():
-
-    # Aggregation pipeline to get the statistics
-
-    explain_collection = ExplainCollection(songs_collection)  # Wrap the collection with ExplainCollection
-
-    try:
-        # Aggregation pipeline to get the statistics
-        pipeline = [
-            {
-                "$lookup": {
-                    "from": "playlist_song",              # Collection to join with
-                    "localField": "id",                  # Field in 'song' collection
-                    "foreignField": "song_id",            # Field in 'playlist_song' collection
-                    "as": "playlist_entries"              # Output array field
-                }
-            },
-            {"$unwind": "$playlist_entries"},  # Flatten the playlist_entries array
-            {
-                "$group": {
-                    "_id": "$artist",                           # Group by artist
-                    "number_of_playlists": {"$sum": 1},         # Count total playlists the song appears in
-                    "average_position": {"$avg": "$playlist_entries.position"},  # Calculate average position
-                    "unique_songs": {"$addToSet": "$_id"}       # Collect unique song IDs
-                }
-            },
-            {
-                "$project": {
-                    "_id": 0,                                   # Exclude default _id
-                    "song_artist": "$_id",                      # Rename _id to song_artist
-                    "number_of_playlists": 1,
-                    "average_position": 1,
-                    "unique_songs": {"$size": "$unique_songs"}  # Count unique songs per artist
-                }
-            },
-            {
-                "$sort": {"song_artist": 1}  # Sort alphabetically by song_artist (1 for ascending order)
+    pipeline = [
+        # Unwind die Songs, um sie einzeln zu verarbeiten
+        {
+            '$unwind': '$songs'
+        },
+        # Lookup, um die Songdetails (Titel und Interpret) zu erhalten
+        {
+            '$lookup': {
+                'from': 'songs',
+                'localField': 'songs.song_id',
+                'foreignField': '_id',
+                'as': 'song_details'
             }
-        ]
+        },
+        # Unwind die Songdetails, um sie einzeln zu verarbeiten
+        {
+            '$unwind': '$song_details'
+        },
+        # Groupiere die Daten nach dem Interpreten
+        {
+            '$group': {
+                '_id': '$song_details.artist',
+                'number_of_playlists': {'$sum': 1},  # Anzahl der Playlists
+                'average_position': {'$avg': '$songs.position'},  # Durchschnittliche Position
+                'unique_songs': {'$addToSet': '$song_details._id'}  # Einzigartige Lieder
+            }
+        },
+        # Berechne die Anzahl der einzigartigen Lieder
+        {
+            '$project': {
+                'artist': '$_id',
+                'number_of_playlists': 1,
+                'average_position': 1,
+                'unique_song_count': {'$size': '$unique_songs'}  # Anzahl der einzigartigen Songs
+            }
+        }
+    ]
 
-        # Fetch the query execution plan using explain()
-        try:
-            explain_result = explain_collection.aggregate(pipeline)  
-            print("EXPLAIN Results:")
-            print(explain_result)  # Print the detailed execution plan to the console
-        except Exception as e:
-            print(f"Fehler beim Ausführen der EXPLAIN-Abfrage: {e}")
-        
-        # Execute the aggregation pipeline
-        statistics = list(songs_collection.aggregate(pipeline))
-        
-        # Check if the statistics list is empty
-        if not statistics:
-            return jsonify({'message': 'No statistics found!'}), 404
-        
-        return jsonify({'statistics': statistics})
-    
-    except Exception as e:
-        return jsonify({'message': 'Error fetching statistics!', 'error': str(e)}), 500
+    # Aggregation ausführen
+    statistics = list(mongo.db.playlists.aggregate(pipeline))
+    # explain_result = mongo.db.playlists.aggregate(pipeline, explain=True)
+
+    # Überprüfung, ob die Ergebnisse leer sind
+    if not statistics:
+        return jsonify({'message': 'No statistics found!'}), 404
+
+    return jsonify({'statistics': statistics})
+
+# http://localhost:5000/statistics
 
 
-# endregion
+#endregion
 
 if __name__ == '__main__':
     PA3.run(debug=True)
